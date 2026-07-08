@@ -1,0 +1,11 @@
+held_out_run,true_class,pred_GeneratorFault,pred_Leakage,pred_PumpDisplacement,n_windows,run_accuracy
+simplified_generator_fault,GeneratorFault,0,0,24,24,0.0
+simplifiied-generator-fault,GeneratorFault,19,0,0,19,1.0
+simplifiied-generator-fault(st-0.5),GeneratorFault,39,0,0,39,1.0
+Leakage_factor,Leakage,0,9,0,9,1.0
+leakage_fault(0.5),Leakage,0,17,0,17,1.0
+leakage_fault(1.0),Leakage,0,17,0,17,1.0
+disp1_fault(0.5),PumpDisplacement,0,0,19,19,1.0
+disp2_fault(0.3),PumpDisplacement,0,0,19,19,1.0
+disp3_fault(0.2),PumpDisplacement,0,0,19,19,1.0
+pump_disp(st-0.5),PumpDisplacement,0,0,39,39,1.0

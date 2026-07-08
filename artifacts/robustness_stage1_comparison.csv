@@ -1,0 +1,4 @@
+detector,fault_detection,healthy_false_alarm,separation_margin
+Mahalanobis (deployed),1.0,0.0,1303934.2790339605
+IsolationForest,0.0,0.0,1.0593015382180722
+One-Class SVM,1.0,0.0,907.206010981793

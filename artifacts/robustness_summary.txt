@@ -1,0 +1,5 @@
+[!!] Per-fold check: run-level accuracy min 0% / median 100% / max 100%; 9/10 runs fully correct; the only degraded folds are the known GeneratorFault export-settings issue.
+[!!] Calibration: max predicted-vs-observed gap 0.260 (tolerance 0.15) -> gate probabilities are NOT trustworthy.
+[OK] Gate: retain 0.90 — fixed 0.90 rejects 100% of the unseen fault at 79% known-fault pass rate.
+[OK] Stage 1: Mahalanobis remains the best detector (all three reach 100% detection; margins in robustness_stage1_comparison.csv).
+[--] Main limitation unchanged: a single healthy run — Stage 1 false-alarm rate on unseen healthy operating points is still unmeasurable; new healthy runs are the top data request.

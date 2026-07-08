@@ -1,0 +1,3 @@
+gate,known_pass_rate,accuracy_on_passed,unknown_fault_rejected
+fixed 0.90,0.7873303167420814,0.867816091954023,1.0
+5th-pct of correct (0.701),0.9502262443438914,0.8904761904761904,0.0
