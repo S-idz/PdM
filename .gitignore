@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+catboost_info/
+
+# Regenerable pipeline caches (rebuilt by stages 01/03/04)
+artifacts/*.parquet
+artifacts/*.npz
+
+# Local env
+.venv/
+venv/
+.DS_Store
+
+# Archived material (excluded raw runs, superseded scripts/notebooks)
+_archive/
+
+# Local tool state
+.claude/
+.obsidian/workspace.json
+
+# Raw logs over GitHub's 100 MB file limit (keep locally; see README)
+RAW_DIR/raw/leakage_fault(0.5).csv
+RAW_DIR/raw/leakage_fault(1.0).csv
+
+# Office lock files
+~$*

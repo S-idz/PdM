@@ -1,0 +1,37 @@
+
+Yes — will run, if these hold:
+
+Conditions
+
+1. Right folder layout. Code reads RAW_DIR/<filename>. Two ways:
+- Keep pdm/ folder inside the folder holding all raw files (same as your layout). Default RAW_DIR = pdm/'s parent. No config needed. ← easiest
+- Or set env var PDM_RAW_DIR to wherever raw files sit.
+
+2. Exact filenames. Code reads these 10 files by exact name (spaces, parentheses matter):
+Healthy Data 3.xlsx
+disp1_fault(0.5).xlsx
+disp2_fault(0.3).xlsx
+disp3_fault(0.2).xlsx
+Leakage_factor.xlsx
+leakage_fault(0.5).csv
+leakage_fault(1.0).csv
+MildFlexible_shaft.xlsx
+Medium_FlexibleShaft_Fault.xlsx
+simplified_generator_fault.xlsx
+Rename = fail. Friend can have extra files (X_Sevear, X_Critical, Pump_Displacement, healthy 1&2) — code skips them on purpose, no harm.
+
+3. Deps installed — pip install -r requirements.txt.
+
+4. Enough RAM — leakage CSVs are ~230 MB each, loaded into pandas. Needs ~3-4 GB free. Normal laptop fine.
+
+5. Launch Jupyter from inside pdm/ so import pdm_common resolves.
+
+Will reproduce same model
+
+random_state fixed everywhere → friend gets identical results. Retrain overwrites artifacts/.
+
+Realistic failure point
+
+Only real risk = filename or folder-layout mismatch. If friend dumps raw files in a different folder without setting PDM_RAW_DIR, cells 01–04 error "missing file". Fix = match layout or set the env var.
+
+Stages 05–06 (model train) need no raw data — they read cached artifacts/. So even partial raw data still lets retrain-from-features work.

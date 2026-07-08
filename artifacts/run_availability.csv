@@ -1,0 +1,14 @@
+run_id,file,label,always_on,n_rows,t_max,signals
+Healthy Data 3,Healthy Data 3.xlsx,Healthy,False,1501,0.2,pressure|current|vdc|vac|speed|torque|flow
+disp1_fault(0.5),disp1_fault(0.5).xlsx,PumpDisplacement,False,2500,0.3,pressure|current|vdc|vac|speed|torque|flow|fuel
+disp2_fault(0.3),disp2_fault(0.3).xlsx,PumpDisplacement,False,2500,0.3,pressure|current|vdc|vac|speed|torque|flow|fuel
+disp3_fault(0.2),disp3_fault(0.2).xlsx,PumpDisplacement,False,2500,0.3,pressure|current|vdc|vac|speed|torque|flow|fuel
+pump_disp(st-0.5),pump_disp(st-0.5).xlsx,PumpDisplacement,False,4500,0.5,pressure|current|vdc|vac|speed|torque|flow|fuel
+Leakage_factor,Leakage_factor.xlsx,Leakage,False,1501,0.2,pressure|current|vdc|vac|speed|torque|flow|fuel
+leakage_fault(0.5),leakage_fault(0.5).csv,Leakage,False,2388,0.288706814,pressure|current|vdc|vac|speed|torque|flow|fuel
+leakage_fault(1.0),leakage_fault(1.0).csv,Leakage,False,2384,0.288381979,pressure|current|vdc|vac|speed|torque|flow|fuel
+MildFlexible_shaft,MildFlexible_shaft.xlsx,FlexibleShaft,False,2495,0.299485270696448,pressure|current|vdc|vac
+Medium_FlexibleShaft_Fault,Medium_FlexibleShaft_Fault.xlsx,FlexibleShaft,False,2500,0.3,pressure|current|vdc|vac
+simplified_generator_fault,simplified_generator_fault.xlsx,GeneratorFault,True,2500,0.3,pressure|current|vdc|vac|speed|torque|fuel
+simplifiied-generator-fault,simplifiied-generator-fault.xlsx,GeneratorFault,False,2500,0.3,pressure|current|vdc|vac|speed|torque|flow|fuel
+simplifiied-generator-fault(st-0.5),simplifiied-generator-fault(st-0.5).xlsx,GeneratorFault,False,4500,0.5,pressure|current|vdc|vac|speed|torque|flow|fuel

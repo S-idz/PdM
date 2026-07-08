@@ -1,0 +1,14 @@
+run_id,label,n_windows,included
+Healthy Data 3,Healthy,9,True
+Leakage_factor,Leakage,9,True
+Medium_FlexibleShaft_Fault,FlexibleShaft,19,True
+MildFlexible_shaft,FlexibleShaft,18,True
+disp1_fault(0.5),PumpDisplacement,19,True
+disp2_fault(0.3),PumpDisplacement,19,True
+disp3_fault(0.2),PumpDisplacement,19,True
+leakage_fault(0.5),Leakage,17,True
+leakage_fault(1.0),Leakage,17,True
+pump_disp(st-0.5),PumpDisplacement,39,True
+simplified_generator_fault,GeneratorFault,24,True
+simplifiied-generator-fault,GeneratorFault,19,True
+simplifiied-generator-fault(st-0.5),GeneratorFault,39,True

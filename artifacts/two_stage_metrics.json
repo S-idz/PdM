@@ -1,0 +1,12 @@
+{
+  "stage1_fault_detection_rate": 1.0,
+  "stage2_model": "Vote(ExtraTrees+LightGBM+CatBoost)",
+  "stage2_macro_f1": 0.9058201058201059,
+  "stage2_accuracy": 0.8914027149321267,
+  "gate": 0.9,
+  "gate_known_pass_rate": 0.7873303167420814,
+  "gate_accuracy_on_passed": 0.867816091954023,
+  "gate_flex_rejected_as_unknown": 1.0,
+  "validation": "leave-one-run-out everywhere; Stage1 threshold in-run (1 healthy run)",
+  "excluded_run": "Medium_FlexibleShaft_Fault (removed by project decision)"
+}
