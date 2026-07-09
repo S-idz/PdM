@@ -1,41 +1,44 @@
 # ============================================================================
-# CELL 07 -- Streamlit GUI.   Run from a terminal:
-#     streamlit run "F:/jyupter notebook/pdm/07_streamlit_app.py"
-# Upload a Simulink xlsx/csv log -> the SAME pdm_common transforms used in
-# training (no train/serve skew) -> per-window prediction -> aggregated verdict
-# (Healthy / which fault) with confidence + signal plots.
+# CELL 07 -- Streamlit dashboard (v2).   Run:  streamlit run 07_streamlit_app.py
 #
-# Layout follows standard condition-monitoring dashboards:
-#   sidebar  = brand, model card, color-coded fault-class legend
-#   main tab = Upload -> Status banner -> KPI row -> Diagnosis (probability
-#              bars + detail table + per-window timeline) -> Sensor signals
-#              (one panel per channel, labelled with its physical unit)
-#   2nd tab  = plain-English glossary
-# One shared color per class everywhere (legend, banner, charts, table).
-# Palette validated for light AND dark surfaces incl. color-vision deficiency.
+# Two-stage PdM dashboard, styled after industrial condition-monitoring UIs:
+#   header bar -> upload card -> color-coded KPI row -> alarm trend + gauge ->
+#   diagnosis (verdict share + "why this diagnosis") -> per-window timeline ->
+#   event log -> sensor signals with healthy baseline band -> channel tiles ->
+#   export + model trust panel.  Tabs: Dashboard / Window Data / Glossary.
+#
+# Performance: ALL inference runs once per upload inside st.cache_data; the
+# model bundle loads once via st.cache_resource; widget interaction only
+# re-renders cached results.  Dual theme via .streamlit/config.toml — cards
+# use st.container(border=True) + theme-neutral CSS so both themes work.
+# Decision logic is IDENTICAL to the validated two-stage flow (notebook 07).
 # ============================================================================
-import json, numpy as np, pandas as pd, joblib
+import io, json, time
+from pathlib import Path
+
+import joblib
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
+
 import pdm_common as P
 
-st.set_page_config(page_title="PdM — Engine/Alternator/Pump", layout="wide",
-                   initial_sidebar_state="expanded")
+st.set_page_config(page_title="PdM — Engine/Alternator/Pump", layout="wide")
 
 # --------------------------------------------------------------------------- #
-# Class identity: one color + one icon per class, used everywhere so the eye
-# learns "this color = this fault" once and it holds for the whole page.
-# Colors pass lightness/chroma/CVD/contrast checks on light & dark surfaces.
+# Class identity: ONE fixed color + icon per verdict, used everywhere.
 # --------------------------------------------------------------------------- #
 CLASS_COLORS = {
-    "Healthy": "#16a34a", "GeneratorFault": "#dc2626", "PumpDisplacement": "#ea580c",
-    "Leakage": "#7c3aed", "Unknown fault": "#b45309",
+    "Healthy": "#16a34a", "Leakage": "#7c3aed", "PumpDisplacement": "#ea580c",
+    "GeneratorFault": "#dc2626", "Unknown fault": "#b45309",
 }
 CLASS_ICON = {
-    "Healthy": "✅", "GeneratorFault": "⚡", "PumpDisplacement": "🛢️",
-    "Leakage": "💧", "Unknown fault": "❓",
+    "Healthy": "✅", "Leakage": "💧", "PumpDisplacement": "🛢️",
+    "GeneratorFault": "⚡", "Unknown fault": "❓",
 }
-CLASS_DESCRIPTIONS = {  # display copy only
+CLASS_DESCRIPTIONS = {
     "Healthy": "Signals sit inside the healthy baseline — no anomaly detected.",
     "GeneratorFault": "Alternator/generator signals show an abnormal pattern.",
     "PumpDisplacement": "Hydraulic pump displacement (flow output) looks abnormal.",
@@ -43,43 +46,36 @@ CLASS_DESCRIPTIONS = {  # display copy only
     "Unknown fault": "Anomalous, but doesn't confidently match any trained fault — "
                      "possible FlexibleShaft fault or a new fault type. Inspect the machine.",
 }
-SIGNAL_LABEL = {  # channel -> (display name, physical unit after harmonization)
+SIGNAL_LABEL = {
     "pressure": ("Pump pressure", "bar"), "current": ("Load current", "A"),
     "vdc": ("DC bus voltage", "V"), "vac": ("Alternator AC voltage", "V"),
-    "speed": ("Shaft speed", "rpm"), "torque": ("Shaft torque", "N·m"),
-    "flow": ("Flow rate", "L/min"), "fuel": ("Fuel rate", "kg/s"),
 }
-INK = "#8b9099"          # mid-gray chart ink: legible on light and dark themes
-SIGNAL_COLOR = "#3b82f6"  # neutral accent for raw signals (not a class color)
+INK = "#8b9099"  # mid-gray: legible on light and dark
 
-
-def swatch(color: str) -> str:
-    return (f'<span style="display:inline-block; width:10px; height:10px; '
-            f'border-radius:3px; background:{color}; margin-right:0.5rem;"></span>')
-
-
-# --------------------------------------------------------------------------- #
-# Global style: one font, one heading scale, bordered "card" sections,
-# uppercase micro-labels for section headers (standard dashboard chrome).
-# --------------------------------------------------------------------------- #
 st.markdown("""
 <style>
-html, body, [class*="css"] {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-}
-h1 { font-size: 1.7rem !important; font-weight: 700 !important; }
-[data-testid="stMetricLabel"] { font-size: 0.8rem !important; opacity: 0.7; }
-[data-testid="stMetricValue"] { font-size: 1.55rem !important; font-weight: 600; }
-section[data-testid="stSidebar"] { border-right: 1px solid rgba(128,128,128,0.25); }
-.pdm-brand { font-size: 1.15rem; font-weight: 700; margin-bottom: 0.1rem; }
-.pdm-brand-sub { font-size: 0.82rem; opacity: 0.65; margin-bottom: 1rem; }
-.pdm-section { font-size: 0.78rem; font-weight: 600; letter-spacing: 0.08em;
-               text-transform: uppercase; opacity: 0.6; margin: 1.3rem 0 0.5rem 0; }
-.pdm-card-title { font-size: 0.95rem; font-weight: 600; margin-bottom: 0.1rem; }
-.pdm-legend-row { font-size: 0.9rem; margin: 0.25rem 0; }
-.pdm-banner { border-radius: 12px; padding: 1.1rem 1.4rem; margin: 0.4rem 0 1rem 0; }
-.pdm-banner-title { font-size: 1.7rem; font-weight: 700; margin: 0 0 0.25rem 0; }
-.pdm-banner-desc { font-size: 1rem; margin: 0; opacity: 0.85; }
+/* One type scale for the whole app: 0.72 / 0.8 / 0.95 / 1.45 rem. Every card
+   title, label and caption below maps onto one of these four sizes so nothing
+   looks like it wandered in from a different UI. */
+h1 { font-size: 1.45rem !important; font-weight: 700 !important; }
+h2, h3 { font-size: 0.95rem !important; font-weight: 700 !important; }
+.pdm-micro { font-size: 0.72rem; font-weight: 600; letter-spacing: 0.09em;
+             text-transform: uppercase; opacity: 0.6; margin-bottom: 0.15rem; }
+.pdm-kpi   { font-size: 1.45rem; font-weight: 700; line-height: 1.2; }
+.pdm-sub   { font-size: 0.8rem; opacity: 0.65; }
+.pdm-dot   { display:inline-block; width:10px; height:10px; border-radius:50%;
+             margin-right:0.45rem; }
+.pdm-chip  { display:inline-block; padding:2px 10px; border-radius:999px;
+             font-size:0.72rem; font-weight:600; border:1px solid rgba(128,128,128,.35);
+             margin-left:0.4rem; opacity:.85; }
+.pdm-tile  { display:inline-block; text-align:center; border:1px solid;
+             border-radius:10px; padding:0.55rem 1.1rem; margin:0.15rem 0.3rem;
+             font-size:0.8rem; font-weight:600; }
+.pdm-section { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.08em;
+               text-transform: uppercase; opacity: 0.6; margin: 1.0rem 0 0.4rem 0; }
+.pdm-card-title { font-size: 0.95rem; font-weight: 700; margin-bottom: 0.1rem; }
+div[data-testid="stMarkdownContainer"] p { font-size: 0.8rem; }
+div[data-testid="stMarkdownContainer"] strong { font-size: inherit; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -93,11 +89,51 @@ plt.rcParams.update({
 })
 
 
+def dot(color): return f'<span class="pdm-dot" style="background:{color};"></span>'
+
+
+def kpi_card(col, label, value, color=None, sub=""):
+    with col:
+        with st.container(border=True):
+            st.markdown(f'<div class="pdm-micro">{label}</div>', unsafe_allow_html=True)
+            c = f'color:{color};' if color else ""
+            d = dot(color) if color else ""
+            st.markdown(f'<div class="pdm-kpi" style="{c}">{d}{value}</div>',
+                        unsafe_allow_html=True)
+            if sub:
+                st.markdown(f'<div class="pdm-sub">{sub}</div>', unsafe_allow_html=True)
+
+
+# --------------------------------------------------------------------------- #
+# Cached loading + inference (compute once, render many)
+# --------------------------------------------------------------------------- #
 @st.cache_resource
 def load_model():
     bundle = joblib.load(P.ART_DIR / "two_stage_model.joblib")
     meta = json.loads((P.ART_DIR / "meta.json").read_text())
     return bundle, meta
+
+
+@st.cache_data
+def load_trust_panel():
+    out = {}
+    for f, key in [("two_stage_metrics.json", "metrics"), ("robustness_summary.txt", "robust")]:
+        p = P.ART_DIR / f
+        if p.exists():
+            out[key] = json.loads(p.read_text()) if f.endswith(".json") else p.read_text()
+    return out
+
+
+@st.cache_data
+def healthy_band():
+    """Per-channel healthy min/max band from the cleaned healthy run (once)."""
+    p = P.ART_DIR / "clean_runs.parquet"
+    if not p.exists():
+        return {}
+    df = pd.read_parquet(p)
+    h = df[df["run_id"].astype(str).str.contains("Healthy", case=False)]
+    return {c: (float(h[c].min()), float(h[c].max()))
+            for c in SIGNAL_LABEL if c in h.columns and h[c].notna().any()}
 
 
 bundle, meta = load_model()
@@ -109,221 +145,277 @@ S2_MODEL, S2_LABELS = bundle["stage2_model"], bundle["stage2_labels"]
 S2_GATE = bundle["stage2_gate"]
 DISPLAY_CLASSES = ["Healthy"] + list(S2_LABELS) + ["Unknown fault"]
 
-# ============================================================================
-# Sidebar -- brand, model card, color-coded class legend
-# ============================================================================
-with st.sidebar:
-    st.markdown('<div class="pdm-brand">🛠️ PdM Classifier</div>'
-                '<div class="pdm-brand-sub">Engine · Alternator · Hydraulic Pump</div>',
-                unsafe_allow_html=True)
 
-    with st.container(border=True):
-        st.caption("MODEL")
-        st.markdown("**Two-stage: Health Monitor → Fault Diagnoser**")
-        st.caption("Stage 1: one-class healthy baseline (Mahalanobis). "
-                   "Stage 2: vote ensemble (ExtraTrees + LightGBM + CatBoost) "
-                   f"with a {S2_GATE:.0%} confidence gate.")
-        st.caption("Input signals: " + ", ".join(common))
-
-    with st.container(border=True):
-        st.caption("VERDICT CLASSES")
-        for c in DISPLAY_CLASSES:
-            st.markdown(
-                f'<div class="pdm-legend-row">{swatch(CLASS_COLORS.get(c, "#666"))}'
-                f'{CLASS_ICON.get(c, "•")} {c}</div>',
-                unsafe_allow_html=True)
-        st.caption("❓ Unknown fault = anomalous but below the confidence gate — "
-                   "includes FlexibleShaft, which has too little training data "
-                   "to be named directly.")
-
-tab_dashboard, tab_glossary = st.tabs(["📊  Dashboard", "📖  Glossary"])
-
-# ============================================================================
-# Dashboard tab
-# ============================================================================
-with tab_dashboard:
-    st.markdown("# Predictive Maintenance Dashboard")
-    st.caption("Upload a Simulink sensor log to get a Healthy / fault-type verdict. "
-               "Terms are explained in the Glossary tab.")
-
-    # ---- 1. Upload ---------------------------------------------------------
-    st.markdown('<div class="pdm-section">1 · Sensor log</div>', unsafe_allow_html=True)
-    with st.container(border=True):
-        up = st.file_uploader("Simulink log (.xlsx or .csv)", type=["xlsx", "csv"],
-                              label_visibility="collapsed")
-        if up is not None:
-            df_raw = pd.read_csv(up, low_memory=False) if up.name.endswith(".csv") else pd.read_excel(up)
-            st.caption(f"**{up.name}** — {df_raw.shape[0]:,} rows × {df_raw.shape[1]} columns")
-
-    if up is None:
-        st.info("Awaiting upload. The log must contain a time column plus the "
-                f"trained signal channels ({', '.join(common)}) and cover the "
-                f"fault-active region (t ≥ {P.FAULT_T} s).")
-        st.stop()
-
-    try:
-        feats = P.process_uploaded(df_raw, common, fname=up.name)
-    except KeyError as e:
-        st.error(f"Signal channel {e} was not found in this log. The model needs "
-                 f"all of: {', '.join(common)}. Check the file's column names "
-                 "against a known-good Simulink export.")
-        st.stop()
+@st.cache_data(show_spinner="Analyzing log — running the two-stage model …")
+def analyze(file_bytes: bytes, fname: str):
+    """Full pipeline for one uploaded log. Runs ONCE per file (cached)."""
+    buf = io.BytesIO(file_bytes)
+    df_raw = pd.read_csv(buf, low_memory=False) if fname.lower().endswith(".csv") \
+        else P.read_excel_fast(buf)
+    feats = P.process_uploaded(df_raw, common, fname=fname)
     if feats.empty:
-        st.error(f"Could not extract ≥{P.MIN_WINDOWS} complete windows from the "
-                 f"fault-active region (t ≥ {P.FAULT_T}s). Is the log long enough / "
-                 "are the expected signal columns present?")
-        st.stop()
+        return {"error": "windows", "shape": df_raw.shape}
 
-    X = np.nan_to_num(
-        feats.reindex(columns=feat_cols, fill_value=0.0).to_numpy(),
-        nan=0.0, posinf=0.0, neginf=0.0)
-
-    # ---- Two-stage decision flow, per window -------------------------------
-    # Stage 1: distance to healthy baseline. Below threshold -> Healthy.
+    X = np.nan_to_num(feats.reindex(columns=feat_cols, fill_value=0.0).to_numpy(),
+                      nan=0.0, posinf=0.0, neginf=0.0)
+    # ---- identical two-stage decision flow (validated in notebook 07) ------
     dist = S1_COV.mahalanobis(S1_SCALER.transform(X))
-    is_anomalous = dist > S1_THR
-    # Stage 2: name the fault, but only above the confidence gate.
-    proba2 = S2_MODEL.predict_proba(X)                  # cols in S2_LABELS order
+    anom = dist > S1_THR
+    proba2 = S2_MODEL.predict_proba(X)
     top_p = proba2.max(1)
     top_lbl = np.array(S2_LABELS)[proba2.argmax(1)]
-    win_pred = [
-        "Healthy" if not anom else
-        (lbl if p >= S2_GATE else "Unknown fault")
-        for anom, lbl, p in zip(is_anomalous, top_lbl, top_p)
-    ]
+    win_pred = ["Healthy" if not a else (l if p >= S2_GATE else "Unknown fault")
+                for a, l, p in zip(anom, top_lbl, top_p)]
     votes = pd.Series(win_pred).value_counts()
     verdict = votes.idxmax()
-    agreement = votes.max() / len(feats)
-    # confidence: healthy = share below baseline; named fault = mean stage-2
-    # probability on its windows; unknown = share of anomalous-but-gated windows
     if verdict == "Healthy":
-        conf = float((~is_anomalous).mean())
+        conf = float((~anom).mean())
     elif verdict == "Unknown fault":
-        conf = float(agreement)
+        conf = float(votes.max() / len(win_pred))
     else:
-        mask = np.array(win_pred) == verdict
-        conf = float(proba2[mask, S2_LABELS.index(verdict)].mean())
-    # vote share per display class drives the "Class probability" chart
-    mean_p = np.array([votes.get(c, 0) / len(feats) for c in DISPLAY_CLASSES])
-    cls_order = DISPLAY_CLASSES
+        m = np.array(win_pred) == verdict
+        conf = float(proba2[m, S2_LABELS.index(verdict)].mean())
 
-    # ---- 2. Machine status -------------------------------------------------
-    st.markdown('<div class="pdm-section">2 · Machine status</div>', unsafe_allow_html=True)
-    accent = CLASS_COLORS.get(verdict, "#374151")
-    icon = CLASS_ICON.get(verdict, "❓")
-    st.markdown(
-        f"""<div class="pdm-banner" style="background:{accent}14; border:1px solid {accent}44;">
-        <p class="pdm-banner-title" style="color:{accent};">{icon} {verdict}</p>
-        <p class="pdm-banner-desc">{CLASS_DESCRIPTIONS.get(verdict, "")}</p>
-        </div>""", unsafe_allow_html=True)
+    # ---- evidence: mean robust z-score per feature vs healthy baseline ----
+    Z = S1_SCALER.transform(X)
+    z_mean = pd.Series(np.abs(Z).mean(0), index=feat_cols).sort_values(ascending=False)
+    z_dir = pd.Series(Z.mean(0), index=feat_cols)
 
-    if verdict == "Unknown fault":
-        st.warning("The machine is **anomalous** (Stage 1 is confident about that), "
-                   "but the fault type doesn't confidently match Leakage, "
-                   "PumpDisplacement, or GeneratorFault. A **FlexibleShaft fault "
-                   "produces exactly this verdict** — it has too little training "
-                   "data to be named directly. Schedule an inspection.")
-    if verdict == "Healthy":
-        st.info("Note: the healthy baseline comes from one reference run — "
-                "a log from a very different operating point may be flagged "
-                "anomalous even if the machine is fine.")
-    if conf < 0.5:
-        st.warning(f"Confidence is {conf:.0%} — the windows disagree. "
-                   "Treat this verdict as indicative, not conclusive.")
-
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Confidence", f"{conf:.0%}",
-              help="Healthy: share of windows inside the healthy baseline. Named fault: "
-                   "mean ensemble probability on that fault's windows. Unknown: share of "
-                   "windows routed to Unknown.")
-    m2.metric("Anomalous windows", f"{is_anomalous.mean():.0%}",
-              help="Stage 1: share of windows beyond the healthy baseline threshold.")
-    m3.metric("Windows analysed", f"{len(feats):,}",
-              help="Number of overlapping time-slices extracted from the fault-active region.")
-
-    # ---- 3. Diagnosis ------------------------------------------------------
-    st.markdown('<div class="pdm-section">3 · Diagnosis</div>', unsafe_allow_html=True)
-    order = np.argsort(mean_p)                     # ascending -> top class on top of hbar
-    cls_sorted = [cls_order[i] for i in order]
-    p_sorted = mean_p[order]
-
-    c1, c2 = st.columns([3, 2], gap="large")
-    with c1:
-        with st.container(border=True):
-            st.markdown('<div class="pdm-card-title">Verdict share</div>',
-                        unsafe_allow_html=True)
-            st.caption("Share of windows assigned to each verdict by the two-stage "
-                       "flow — the final verdict is the highest bar.")
-            fig, ax = plt.subplots(figsize=(5.6, 2.9))
-            bars = ax.barh(cls_sorted, p_sorted, height=0.55,
-                           color=[CLASS_COLORS.get(c, "#7f7f7f") for c in cls_sorted])
-            for c, p, b in zip(cls_sorted, p_sorted, bars):
-                ax.text(b.get_width() + 0.015, b.get_y() + b.get_height() / 2,
-                        f"{p:.1%}", va="center", fontsize=9.5,
-                        fontweight="bold" if c == verdict else "normal")
-            ax.set_xlim(0, 1.14)
-            ax.set_xticks([]); ax.grid(False)
-            ax.spines["bottom"].set_visible(False)
-            ax.tick_params(axis="y", length=0)
-            fig.tight_layout()
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
-    with c2:
-        with st.container(border=True):
-            st.markdown('<div class="pdm-card-title">Detail table</div>',
-                        unsafe_allow_html=True)
-            st.caption("Exact numbers behind the chart.")
-            detail = pd.DataFrame({
-                "Class": cls_sorted[::-1],
-                "Probability": (p_sorted[::-1] * 100).round(1),
-                "Window votes": [int(votes.get(c, 0)) for c in cls_sorted[::-1]],
-            })
-            st.dataframe(
-                detail, hide_index=True, use_container_width=True,
-                column_config={
-                    "Probability": st.column_config.ProgressColumn(
-                        "Probability", format="%.1f%%", min_value=0, max_value=100),
-                    "Window votes": st.column_config.NumberColumn("Window votes"),
-                })
-
-    with st.container(border=True):
-        st.markdown('<div class="pdm-card-title">Per-window classification timeline</div>',
-                    unsafe_allow_html=True)
-        st.caption("Each cell is one time-slice of the log, colored by the class it "
-                   "voted for (legend in the sidebar). A solid strip = unanimous; "
-                   "a color change = the signal changed behaviour partway through.")
-        fig, ax = plt.subplots(figsize=(10.5, 0.55))
-        ax.bar(range(len(win_pred)), [1] * len(win_pred), width=0.92,
-               color=[CLASS_COLORS.get(c, "#7f7f7f") for c in win_pred])
-        ax.set_xlim(-0.6, len(win_pred) - 0.4); ax.set_ylim(0, 1)
-        ax.set_yticks([]); ax.grid(False)
-        ax.spines["left"].set_visible(False); ax.spines["bottom"].set_visible(False)
-        ax.set_xticks([0, len(win_pred) - 1])
-        ax.set_xticklabels(["first window", "last window"], fontsize=8.5)
-        ax.tick_params(axis="x", length=0)
-        fig.tight_layout(pad=0.3)
-        st.pyplot(fig, use_container_width=True)
-        plt.close(fig)
-
-    # ---- 4. Sensor signals -------------------------------------------------
-    spec = P.infer_spec(df_raw)
+    # ---- cleaned signals for plotting (downsampled once) -------------------
+    if fname in P.FILE_MAP:
+        m_ = P.FILE_MAP[fname]
+        spec = dict(label="unknown", always_on=m_["always_on"], cols=m_["cols"])
+    else:
+        spec = P.infer_spec(df_raw)
     h = P.harmonize(df_raw.rename(columns={df_raw.columns[0]: "time"}), spec)
     clean = P.clean_run(P.resample_uniform(h))
-    if not clean.empty:
-        st.markdown('<div class="pdm-section">4 · Sensor signals</div>',
+    if len(clean) > 4000:
+        clean = clean.iloc[::len(clean) // 4000].reset_index(drop=True)
+
+    # ---- event log ----------------------------------------------------------
+    events, state = [], None
+    for i, (t0, wp, d) in enumerate(zip(feats["t_start"], win_pred, dist)):
+        s = "HEALTHY" if wp == "Healthy" else "FAULT"
+        if s != state:
+            events.append({"window": i + 1, "t_start [s]": round(float(t0), 4),
+                           "event": ("Returned inside healthy baseline" if s == "HEALTHY"
+                                     else f"Crossed alarm limit — verdict {wp}"),
+                           "distance / limit": round(float(d / S1_THR), 1)})
+            state = s
+    return {
+        "fname": fname, "shape": df_raw.shape, "t_start": feats["t_start"].to_numpy(),
+        "dist": dist, "anom": anom, "proba2": proba2, "win_pred": win_pred,
+        "votes": votes.to_dict(), "verdict": verdict, "conf": conf,
+        "z_mean": z_mean.head(8), "z_dir": z_dir,
+        "clean": clean, "events": pd.DataFrame(events),
+        "channels": [c for c in common if c in clean.columns],
+    }
+
+
+# ============================================================================
+# Header bar (no sidebar)
+# ============================================================================
+with st.container(border=True):
+    h1, h2 = st.columns([3, 2])
+    with h1:
+        st.markdown(
+            "# 🛠️ PdM Dashboard — Engine · Alternator · Hydraulic Pump")
+    with h2:
+        st.markdown(
+            '<div style="text-align:right; padding-top:0.5rem;">'
+            '<span class="pdm-chip">Two-Stage model</span>'
+            '<span class="pdm-chip">ET + LGBM + CatBoost</span>'
+            f'<span class="pdm-chip">gate {S2_GATE:.2f}</span>'
+            f'<span class="pdm-chip">inputs: {", ".join(common)}</span></div>',
+            unsafe_allow_html=True)
+
+tab_dash, tab_data, tab_gloss = st.tabs(["📊  Dashboard", "🗂  Window Data", "📖  Glossary"])
+
+# ---- Upload (shared state) --------------------------------------------------
+with tab_dash:
+    st.markdown('<div class="pdm-section">1 · Sensor log</div>', unsafe_allow_html=True)
+    with st.container(border=True):
+        u1, u2 = st.columns([3, 2])
+        with u1:
+            up = st.file_uploader("Upload a Simulink log (.xlsx / .csv)",
+                                  type=["xlsx", "csv"], label_visibility="collapsed")
+        with u2:
+            sample = None
+            raw_dir = next((d for d in (Path("RAW_DIR/raw"),
+                                        Path(getattr(P, "RAW_DIR", "")) / "raw",
+                                        Path(getattr(P, "RAW_DIR", "")))
+                            if d.exists() and any(d.glob("*.xlsx"))), Path("RAW_DIR/raw"))
+            if raw_dir.exists():
+                opts = ["—"] + sorted(f.name for f in raw_dir.iterdir()
+                                      if f.suffix in (".xlsx", ".csv"))
+                pick = st.selectbox("Sample dataset", opts, index=0)
+                if pick != "—":
+                    sample = raw_dir / pick
+
+# deep-link support: ?sample=<raw filename> preloads a sample (demo/screenshots)
+if up is None and sample is None:
+    qp = st.query_params.get("sample")
+    if qp and (raw_dir / qp).exists():
+        sample = raw_dir / qp
+
+res = None
+if up is not None:
+    res = analyze(up.getvalue(), up.name)
+elif sample is not None:
+    res = analyze(sample.read_bytes(), sample.name)
+
+with tab_dash:
+    if res is None:
+        st.info("Awaiting a sensor log. The file needs a time column, the trained "
+                f"channels ({', '.join(common)}), and data past t = {P.FAULT_T} s.")
+    elif res.get("error"):
+        st.error(f"Could not extract ≥{P.MIN_WINDOWS} complete windows from the "
+                 f"fault-active region (t ≥ {P.FAULT_T}s) of this "
+                 f"{res['shape'][0]:,}-row file. Check length and column names.")
+    else:
+        verdict, conf = res["verdict"], res["conf"]
+        accent = CLASS_COLORS[verdict]
+        n_win = len(res["win_pred"])
+        anom_share = float(res["anom"].mean())
+
+        # ---- 2 · KPI row ----------------------------------------------------
+        st.markdown('<div class="pdm-section">2 · Machine status</div>',
                     unsafe_allow_html=True)
+        k1, k2, k3, k4 = st.columns(4)
+        status = "Healthy" if verdict == "Healthy" else "Fault detected"
+        status_icon = "✅" if verdict == "Healthy" else "⚠️"
+        kpi_card(k1, "System status", f"{status_icon} {status}",
+                 CLASS_COLORS["Healthy"] if verdict == "Healthy" else CLASS_COLORS["GeneratorFault"],
+                 f"{res['fname']} · {n_win} windows")
+        kpi_card(k2, "Diagnosis", verdict, accent, CLASS_DESCRIPTIONS[verdict][:58] + "…")
+        kpi_card(k3, "Anomalous windows", f"{anom_share:.0%}",
+                 CLASS_COLORS["Healthy"] if anom_share == 0 else CLASS_COLORS["Unknown fault"] if anom_share < .5 else CLASS_COLORS["GeneratorFault"],
+                 "share beyond the healthy baseline (Stage 1)")
+        kpi_card(k4, "Confidence", f"{conf:.0%}", accent,
+                 "see Glossary for the per-verdict definition")
+
+        if verdict == "Unknown fault":
+            st.warning("Anomalous, but the pattern doesn't confidently match a "
+                       "trained fault. Schedule an inspection.")
+
+        # ---- 3 · Alarm trend + gauge ----------------------------------------
+        st.markdown('<div class="pdm-section">3 · Alarm trend (Stage 1)</div>',
+                    unsafe_allow_html=True)
+        a1, a2 = st.columns([3, 1.4])
+        with a1:
+            with st.container(border=True):
+                fig = go.Figure()
+                fig.add_hline(y=float(S1_THR), line_dash="dash", line_color="#9ca3af",
+                              annotation_text="alarm limit", annotation_font_color=INK)
+                fig.add_trace(go.Scatter(
+                    x=res["t_start"], y=res["dist"], mode="lines+markers",
+                    line=dict(color="#9ca3af", width=1),
+                    marker=dict(size=9, color=[CLASS_COLORS[w] for w in res["win_pred"]]),
+                    hovertemplate="t=%{x:.3f}s<br>distance=%{y:.3g}<extra></extra>",
+                    name="window distance"))
+                fig.update_yaxes(type="log", title="distance to healthy baseline (log)")
+                fig.update_xaxes(title="window start time [s]")
+                fig.update_layout(height=300, margin=dict(l=10, r=10, t=28, b=10),
+                                  paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                                  showlegend=False,
+                                  title=dict(text="Distance vs alarm limit — dots colored by verdict",
+                                             font=dict(size=13)))
+                st.plotly_chart(fig, use_container_width=True, theme="streamlit")
+        with a2:
+            with st.container(border=True):
+                g = go.Figure(go.Indicator(
+                    mode="gauge+number", value=anom_share * 100,
+                    number={"suffix": "%", "font": {"size": 34}},
+                    gauge={"axis": {"range": [0, 100]},
+                           "bar": {"color": accent},
+                           "steps": [
+                               {"range": [0, 5], "color": "rgba(22,163,74,.25)"},
+                               {"range": [5, 50], "color": "rgba(180,83,9,.25)"},
+                               {"range": [50, 100], "color": "rgba(220,38,38,.25)"}]},
+                    title={"text": "Anomalous windows", "font": {"size": 13}}))
+                g.update_layout(height=272, margin=dict(l=25, r=25, t=40, b=5),
+                                paper_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(g, use_container_width=True, theme="streamlit")
+
+        # ---- 4 · Diagnosis --------------------------------------------------
+        st.markdown('<div class="pdm-section">4 · Diagnosis</div>', unsafe_allow_html=True)
+        d1, d2 = st.columns([3, 2])
+        with d1:
+            with st.container(border=True):
+                st.markdown('<div class="pdm-card-title">Verdict share</div>'
+                            '<div class="pdm-sub">windows assigned to each verdict</div>',
+                            unsafe_allow_html=True)
+                share = [res["votes"].get(c, 0) / n_win for c in DISPLAY_CLASSES]
+                vs = go.Figure(go.Bar(
+                    x=share, y=DISPLAY_CLASSES, orientation="h",
+                    marker_color=[CLASS_COLORS[c] for c in DISPLAY_CLASSES],
+                    text=[f"{s:.0%}" for s in share], textposition="outside"))
+                vs.update_xaxes(range=[0, 1.12], showticklabels=False)
+                vs.update_layout(height=250, margin=dict(l=10, r=10, t=6, b=6),
+                                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)")
+                st.plotly_chart(vs, use_container_width=True, theme="streamlit")
+        with d2:
+            with st.container(border=True):
+                st.markdown('<div class="pdm-card-title">Why this diagnosis</div>'
+                            '<div class="pdm-sub">top deviating features</div>',
+                            unsafe_allow_html=True)
+                st.caption("Mean deviation from the healthy baseline, in robust "
+                           "standard units (σ). What the model actually reacted to.")
+                ev = res["z_mean"]
+                for f_, v in ev.head(5).items():
+                    direction = "above" if res["z_dir"][f_] > 0 else "below"
+                    st.markdown(
+                        f'{dot(accent)}`{f_}` — **{v:,.0f}σ** {direction} healthy',
+                        unsafe_allow_html=True)
+
+        # ---- 5 · Timeline -----------------------------------------------------
         with st.container(border=True):
-            st.caption("Uploaded data after cleaning and unit conversion — the input "
-                       "the model actually reads. One panel per channel; units differ, "
-                       "so each panel has its own scale.")
-            sig_cols = [c for c in common if c in clean.columns]
+            st.markdown('<div class="pdm-card-title">Per-window timeline</div>'
+                        '<div class="pdm-sub">each cell is one time-slice, colored by its verdict</div>',
+                        unsafe_allow_html=True)
+            figt, ax = plt.subplots(figsize=(10.5, 0.5))
+            ax.bar(range(n_win), [1] * n_win, width=0.92,
+                   color=[CLASS_COLORS[w] for w in res["win_pred"]])
+            ax.set_xlim(-0.6, n_win - 0.4); ax.set_ylim(0, 1)
+            ax.set_yticks([]); ax.grid(False)
+            ax.spines["left"].set_visible(False); ax.spines["bottom"].set_visible(False)
+            ax.set_xticks([0, n_win - 1])
+            ax.set_xticklabels([f"{res['t_start'][0]:.2f}s", f"{res['t_start'][-1]:.2f}s"],
+                               fontsize=8.5)
+            ax.tick_params(axis="x", length=0)
+            figt.tight_layout(pad=0.3)
+            st.pyplot(figt, use_container_width=True)
+            plt.close(figt)
+            legend = "&nbsp;&nbsp;".join(
+                f'{dot(CLASS_COLORS[c])}<span class="pdm-sub">{c}</span>'
+                for c in DISPLAY_CLASSES)
+            st.markdown(legend, unsafe_allow_html=True)
+
+        # ---- 6 · Event log ----------------------------------------------------
+        st.markdown('<div class="pdm-section">5 · Event log</div>', unsafe_allow_html=True)
+        with st.container(border=True):
+            if res["events"].empty:
+                st.caption("No state transitions — the log is uniform.")
+            else:
+                st.dataframe(res["events"], hide_index=True, use_container_width=True)
+
+        # ---- 7 · Signals with healthy band -----------------------------------
+        st.markdown('<div class="pdm-section">6 · Sensor signals</div>',
+                    unsafe_allow_html=True)
+        with st.expander("Cleaned signals vs healthy baseline band", expanded=False):
+            band = healthy_band()
+            clean = res["clean"]
+            sig_cols = res["channels"]
             ncols = 2
             nrows = -(-len(sig_cols) // ncols)
-            fig, axes = plt.subplots(nrows, ncols, figsize=(10.5, 2.1 * nrows),
-                                     sharex=True, squeeze=False)
+            figs, axes = plt.subplots(nrows, ncols, figsize=(10.5, 2.2 * nrows),
+                                      sharex=True, squeeze=False)
             for ax, c in zip(axes.flat, sig_cols):
                 name, unit = SIGNAL_LABEL.get(c, (c, ""))
-                ax.plot(clean["time"], clean[c], lw=1, color=SIGNAL_COLOR)
+                if c in band:
+                    ax.axhspan(band[c][0], band[c][1], color=CLASS_COLORS["Healthy"],
+                               alpha=0.12, label="healthy range")
+                ax.plot(clean["time"], clean[c], lw=1, color="#3b82f6")
                 ax.set_title(name, fontsize=9.5, loc="left", fontweight="bold")
                 ax.set_ylabel(unit)
             for ax in axes.flat[len(sig_cols):]:
@@ -331,56 +423,145 @@ with tab_dashboard:
             for ax in axes[-1]:
                 if ax.get_visible():
                     ax.set_xlabel("time [s]")
-            fig.tight_layout()
-            st.pyplot(fig, use_container_width=True)
-            plt.close(fig)
+            axes.flat[0].legend(fontsize=8, frameon=False)
+            figs.tight_layout()
+            st.pyplot(figs, use_container_width=True)
+            plt.close(figs)
+            st.caption("Green band = min–max range of the healthy reference run. "
+                       "Bands far from the signal indicate a different operating "
+                       "point as well as (or instead of) a fault.")
+
+        # ---- 8 · Channel tiles ------------------------------------------------
+        tiles = ""
+        for c in common:
+            ok = c in res["channels"]
+            col = CLASS_COLORS["Healthy"] if ok else CLASS_COLORS["GeneratorFault"]
+            tiles += (f'<span class="pdm-tile" style="border-color:{col}; color:{col};">'
+                      f'{SIGNAL_LABEL.get(c, (c, ""))[0]}<br>'
+                      f'{"✓ OK" if ok else "✗ MISSING"}</span>')
+        with st.container(border=True):
+            st.markdown('<div class="pdm-card-title">Channel status</div>' + tiles,
+                        unsafe_allow_html=True)
+
+        # ---- 9 · Export + trust panel ----------------------------------------
+        e1, e2 = st.columns(2)
+        with e1:
+            with st.container(border=True):
+                st.markdown('<div class="pdm-card-title">Export report</div>',
+                            unsafe_allow_html=True)
+                wdf = pd.DataFrame({
+                    "window": range(1, n_win + 1), "t_start_s": res["t_start"],
+                    "stage1_distance": res["dist"], "anomalous": res["anom"],
+                    "verdict": res["win_pred"],
+                    "stage2_confidence": res["proba2"].max(1)})
+                summary = (f"PdM verdict report\nfile: {res['fname']}\n"
+                           f"verdict: {verdict}\nconfidence: {conf:.1%}\n"
+                           f"anomalous windows: {anom_share:.1%} of {n_win}\n"
+                           f"model: two-stage (gate {S2_GATE})\n")
+                c1, c2 = st.columns(2)
+                c1.download_button("⬇ Verdict summary (.txt)", summary,
+                                   file_name="pdm_verdict.txt")
+                c2.download_button("⬇ Window table (.csv)", wdf.to_csv(index=False),
+                                   file_name="pdm_windows.csv")
+        with e2:
+            trust = load_trust_panel()
+            with st.container(border=True):
+                st.markdown('<div class="pdm-card-title">Model trust panel</div>',
+                            unsafe_allow_html=True)
+                with st.expander("Validation evidence (leave-one-run-out)"):
+                    if "metrics" in trust:
+                        m = trust["metrics"]
+                        st.markdown(
+                            f"- Stage 1 fault detection: **{m['stage1_fault_detection_rate']:.0%}**\n"
+                            f"- Stage 2 accuracy: **{m['stage2_accuracy']:.1%}**, "
+                            f"macro F1 **{m['stage2_macro_f1']:.3f}**\n"
+                            f"- Gate {m['gate']}: rejects **{m['gate_flex_rejected_as_unknown']:.0%}** "
+                            f"of an unseen fault type\n"
+                            f"- Validation: {m['validation']}")
+                    if "robust" in trust:
+                        st.code(trust["robust"], language=None)
+
+        # ---- 10 · Live replay (optional demo) ---------------------------------
+        with st.expander("▶ Live replay (demo) — stream this log window by window"):
+            if st.button("Start replay"):
+                slot = st.empty()
+                for i in range(1, n_win + 1):
+                    with slot.container():
+                        w = res["win_pred"][i - 1]
+                        st.markdown(
+                            f'{dot(CLASS_COLORS[w])}**t = {res["t_start"][i-1]:.3f}s** — '
+                            f'window {i}/{n_win} → **{w}**', unsafe_allow_html=True)
+                        figr, axr = plt.subplots(figsize=(10.5, 0.4))
+                        axr.bar(range(i), [1] * i, width=0.92,
+                                color=[CLASS_COLORS[x] for x in res["win_pred"][:i]])
+                        axr.set_xlim(-0.6, n_win - 0.4); axr.set_ylim(0, 1)
+                        axr.axis("off")
+                        st.pyplot(figr, use_container_width=True)
+                        plt.close(figr)
+                    time.sleep(0.12)
+                st.success(f"Replay complete — final verdict: {verdict}")
+
+# ============================================================================
+# Window Data tab
+# ============================================================================
+with tab_data:
+    if res is None or res.get("error"):
+        st.info("Upload a log on the Dashboard tab first.")
+    else:
+        wdf = pd.DataFrame({
+            "Window": range(1, len(res["win_pred"]) + 1),
+            "t start [s]": np.round(res["t_start"], 4),
+            "Stage 1 distance": np.round(res["dist"], 1),
+            "Anomalous": res["anom"],
+            "Verdict": res["win_pred"],
+            "Confidence": np.round(res["proba2"].max(1) * 100, 1),
+        })
+        f1, f2 = st.columns([1, 3])
+        with f1:
+            pick = st.multiselect("Filter verdicts", DISPLAY_CLASSES, default=[])
+        if pick:
+            wdf = wdf[wdf["Verdict"].isin(pick)]
+        st.dataframe(
+            wdf, hide_index=True, use_container_width=True, height=520,
+            column_config={
+                "Confidence": st.column_config.ProgressColumn(
+                    "Stage 2 confidence", format="%.1f%%", min_value=0, max_value=100),
+            })
+        st.caption(f"{len(wdf)} windows shown. Verdict colors on the Dashboard tab.")
 
 # ============================================================================
 # Glossary tab
 # ============================================================================
-with tab_glossary:
-    st.markdown("# 📖 Glossary")
-    st.caption("Plain-English explanation of every term on the Dashboard.")
-
+with tab_gloss:
+    st.markdown("### 📖 Glossary")
     terms = [
-        ("Machine status / verdict", "The model's final answer: is the machine "
-         "Healthy, or which fault it looks like. It is simply the class with the "
-         "highest mean probability."),
-        ("Confidence", "How sure the system is about the verdict. For Healthy: the "
-         "share of time-slices inside the healthy baseline. For a named fault: the "
-         "diagnoser's average probability on that fault's slices. For Unknown "
-         "fault: the share of slices routed to Unknown."),
-        ("Anomalous windows", "The share of time-slices Stage 1 flags as beyond "
-         "the healthy baseline. 0% means fully healthy-looking; 100% means every "
-         "slice is abnormal."),
-        ("Windows analysed", "The uploaded log is cut into many small, overlapping "
-         'time-slices ("windows"). The model scores each slice separately, then '
-         "combines the results. The count depends only on how long the uploaded "
-         "file is — it is not a fixed or chosen number."),
-        ("Verdict share", "For every possible verdict, the share of time-slices "
-         "the two-stage flow assigned to it. The numbers add up to 100% across "
-         "all verdicts."),
-        ("Stage 1 — Health Monitor", "Before any fault naming, every window is "
-         "compared against a healthy reference baseline (a statistical distance). "
-         "Windows inside the baseline are Healthy; windows beyond it move on to "
-         "fault diagnosis."),
-        ("Confidence gate / Unknown fault", "The fault diagnoser only names a "
-         "fault when its probability is at least 90%. Below that, the window is "
-         "reported as 'Unknown fault' instead of a forced guess. A FlexibleShaft "
-         "fault lands here by design — it has too little training data to be "
-         "named reliably."),
-        ("Per-window classification timeline", "The windows laid out left-to-right "
-         "in time order, each colored by the class it voted for. A solid strip is "
-         "a unanimous verdict; a color change means the signal changed behaviour "
-         "partway through the log."),
-        ("Sensor signals", "The uploaded file's raw sensor readings (pressure, "
-         "current, DC voltage, AC voltage) after cleaning and conversion to "
-         "standard units — the actual data the model reads. Shown one panel per "
-         "channel because the units differ."),
-        ("Healthy baseline caution", "The healthy reference comes from a single "
-         "simulation run. A log recorded at a very different operating point may "
-         "be flagged anomalous even if the machine is fine — more healthy runs "
-         "would widen the baseline."),
+        ("Machine status / Diagnosis", "Stage 1 answers *is it healthy?* by measuring "
+         "each time-slice's statistical distance to a healthy baseline. If anomalous, "
+         "Stage 2 (an ensemble of three tree models) names the fault — but only when "
+         "its probability clears the 0.90 confidence gate; otherwise the verdict is "
+         "'Unknown fault'."),
+        ("Anomalous windows", "Share of time-slices beyond the healthy baseline's "
+         "alarm limit. 0% = fully healthy-looking, 100% = every slice abnormal."),
+        ("Confidence", "Healthy: share of slices inside the baseline. Named fault: "
+         "the ensemble's mean probability on that fault's slices. Unknown: share of "
+         "slices routed to Unknown. Treat it as a ranking signal, not a literal "
+         "probability (see the Model trust panel)."),
+        ("Alarm trend", "Each dot is one time-slice's distance to the healthy "
+         "baseline (log scale) against the dashed alarm limit — the classic "
+         "condition-monitoring trend view."),
+        ("Why this diagnosis", "The features that deviate most from healthy, in "
+         "robust standard units (σ). These are the model's actual inputs — evidence, "
+         "not decoration."),
+        ("Healthy range band", "Green band on the signal plots = min–max of the "
+         "healthy reference run for that channel."),
+        ("Event log", "State transitions: the first window that crossed the alarm "
+         "limit (and any return below it), with time stamps."),
+        ("Unknown fault", "Anomalous but below the confidence gate. A FlexibleShaft "
+         "fault lands here by design — it has too little training data to be named "
+         "reliably. Inspect the machine."),
+        ("Healthy baseline caution", "The baseline comes from a single reference "
+         "run; a healthy log at a very different operating point may be flagged "
+         "anomalous. More healthy runs would widen the baseline."),
     ]
     cols = st.columns(2, gap="medium")
     for i, (title, body) in enumerate(terms):

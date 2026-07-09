@@ -1,0 +1,21 @@
+# Dual-theme dashboard config (Streamlit >= 1.46 supports per-theme tables).
+# The user toggles light/dark from the app menu; both are styled here.
+
+[theme]
+base = "dark"
+
+[theme.light]
+primaryColor = "#2563eb"
+backgroundColor = "#f6f7f9"
+secondaryBackgroundColor = "#ffffff"
+textColor = "#1f2937"
+borderColor = "#e5e7eb"
+baseRadius = "12px"
+
+[theme.dark]
+primaryColor = "#3b82f6"
+backgroundColor = "#0e1117"
+secondaryBackgroundColor = "#171a21"
+textColor = "#e5e7eb"
+borderColor = "#2a2f3a"
+baseRadius = "12px"

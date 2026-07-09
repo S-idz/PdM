@@ -6,8 +6,10 @@ xgboost
 lightgbm
 catboost
 streamlit
+plotly
 joblib
 openpyxl
+python-calamine
 pyarrow
 matplotlib
 nbformat

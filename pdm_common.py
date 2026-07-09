@@ -258,6 +258,45 @@ COMMON = ["pressure", "current", "vdc", "vac"]
 # --------------------------------------------------------------------------- #
 # Stage 1 -- load + harmonize a single raw file into a canonical frame
 # --------------------------------------------------------------------------- #
+def _mangle_dupe_cols(header: list) -> list:
+    """Match pandas' own read_excel behaviour: blank headers -> 'Unnamed: N',
+    repeated headers -> 'name', 'name.1', 'name.2', ... These raw Simulink
+    exports have several scope columns literally named 'time' or 'Constant',
+    so without this a DataFrame ends up with duplicate column labels and
+    df["time"] returns a DataFrame instead of a Series downstream.
+    """
+    seen: dict = {}
+    out = []
+    for i, h in enumerate(header):
+        name = str(h) if h is not None and str(h).strip() != "" else f"Unnamed: {i}"
+        if name in seen:
+            seen[name] += 1
+            out.append(f"{name}.{seen[name]}")
+        else:
+            seen[name] = 0
+            out.append(name)
+    return out
+
+
+def read_excel_fast(source) -> pd.DataFrame:
+    """Read an .xlsx (path or file-like) via python-calamine -- ~10x faster than
+    openpyxl on the large Simulink exports (>100k rows) this app receives, which
+    is what made the dashboard feel slow on upload. Falls back to pandas' default
+    engine if calamine isn't installed or the file trips it up.
+    """
+    try:
+        from python_calamine import CalamineWorkbook
+        wb = (CalamineWorkbook.from_filelike(source) if hasattr(source, "read")
+              else CalamineWorkbook.from_path(str(source)))
+        rows = wb.get_sheet_by_index(0).to_python()
+        header = _mangle_dupe_cols(rows[0])
+        return pd.DataFrame(rows[1:], columns=header)
+    except Exception:
+        if hasattr(source, "seek"):
+            source.seek(0)
+        return pd.read_excel(source)
+
+
 def read_run(path: Path, spec: dict) -> pd.DataFrame:
     """Read csv/xlsx, keep only `time` + the mapped raw signal columns.
 
@@ -276,7 +315,7 @@ def read_run(path: Path, spec: dict) -> pd.DataFrame:
                 keep.append(a)
         df = pd.read_csv(path, usecols=keep, low_memory=False)
     else:
-        df = pd.read_excel(path)
+        df = read_excel_fast(path)
     if "time" not in df.columns:                 # first column is the time base
         df = df.rename(columns={df.columns[0]: "time"})
     keep, seen = ["time"], {"time"}
