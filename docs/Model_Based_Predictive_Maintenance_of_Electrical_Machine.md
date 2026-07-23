@@ -324,6 +324,35 @@ the threshold (100% detection), while all healthy windows fall below it.
 
 ![Stage 1 separation](report_figures/fig3_stage1_separation.png)
 
+### 8.1 Why Mahalanobis — measured against alternatives
+
+Two standard one-class detectors were implemented and evaluated under the
+identical protocol (fit on the 9 healthy windows, threshold = 1.5 × worst
+healthy score, score all 239 fault windows):
+
+**Table 8.1 — Stage 1 detector comparison**
+
+| Detector | Fault detection | Healthy false alarms | Separation margin* |
+|---|---|---|---|
+| **Mahalanobis distance (deployed)** | **100%** | 0% | **≈ 1.3 × 10⁶** |
+| One-Class SVM (RBF, ν = 0.1) | 100% | 0% | 907 |
+| IsolationForest (300 trees) | **0%** | 0% | 1.06 |
+
+*Separation margin = (closest fault window's score) ÷ (worst healthy window's
+score); larger means the threshold sits in a wider safety band.
+
+The result is decisive, and the mechanism explains it. **IsolationForest**
+scores anomalies by how few random splits isolate a point — but with only 9
+training samples its trees are shallow and its score range collapses; every
+fault window scores within 6% of the worst healthy window, so no threshold
+above the healthy maximum can ever fire (0% detection). **One-Class SVM**
+detects everything, but its margin is ~1,400× thinner than Mahalanobis: a
+modest drift in healthy behaviour could push healthy windows across its
+boundary. **Mahalanobis** exploits the strong correlations between the 51
+features (via the Ledoit-Wolf covariance), which places every fault window a
+million-fold beyond the healthy cloud. The detector was therefore chosen by
+measurement, not by preference.
+
 **Assumptions & limitations:** healthy behaviour is unimodal and represented by
 the baseline run; the false-alarm rate is measured on the same run that defined
 the baseline, so a machine at a very different healthy operating point could be
@@ -420,8 +449,29 @@ them as anomalous with 100% detection. Known-fault windows pass the gate at a
 
 ![Confidence gate](report_figures/fig5_confidence_gate.png)
 
-**Limitation:** the gate value (0.90) was validated against one unseen fault
-type; new fault families should be re-checked against it.
+### 10.1 The gate value is evidence-based, not arbitrary
+
+A statistically "natural" alternative was tested: setting the gate at the 5th
+percentile of the confidences of *correct* known-fault predictions (= 0.701,
+i.e. "keep 95% of what the model gets right"). Both gates were compared on
+identical out-of-run predictions:
+
+**Table 10.1 — Gate comparison**
+
+| Gate | Known-fault pass rate | Accuracy on passed windows | Unseen fault rejected as Unknown |
+|---|---|---|---|
+| **0.90 (deployed)** | 78.7% | 86.8% | **100%** |
+| 0.701 (5th-percentile) | 95.0% | 89.0% | **0%** |
+
+The percentile gate keeps more known-fault windows — but fails completely at
+the gate's actual purpose: every window of the unseen fault type sails through
+it and would be confidently mislabeled. The unseen fault's confidences cluster
+at 0.83–0.86, *above* 0.701 but *below* 0.90. The 0.90 gate is therefore
+retained on measured evidence: it is the setting that both passes the majority
+of known faults and rejects 100% of the unseen fault family tested.
+
+**Limitation:** this validation used one unseen fault family; new fault types
+should be re-checked against the gate.
 
 ## 11. Results
 
@@ -435,6 +485,33 @@ type; new fault families should be re-checked against it.
 | Stage 2 macro F1 | **0.906** |
 | Unseen fault type routed to "Unknown" | **100%** |
 | End-to-end smoke test (deployed app, 5 raw logs) | **5/5 correct verdicts, 100% window agreement each** |
+
+### 11.1 Per-run breakdown — where the remaining error actually lives
+
+Aggregate scores hide *which* run fails. Broken down per held-out fold (each
+fold = one complete run):
+
+**Table 11.1 — Per-run diagnosis accuracy (leave-one-run-out)**
+
+| Held-out run | True class | Predicted (windows) | Run accuracy |
+|---|---|---|---|
+| disp1_fault(0.5) | PumpDisplacement | Pump 19/19 | 100% |
+| disp2_fault(0.3) | PumpDisplacement | Pump 19/19 | 100% |
+| disp3_fault(0.2) | PumpDisplacement | Pump 19/19 | 100% |
+| pump_disp(st-0.5) | PumpDisplacement | Pump 39/39 | 100% |
+| Leakage_factor | Leakage | Leakage 9/9 | 100% |
+| leakage_fault(0.5) | Leakage | Leakage 17/17 | 100% |
+| leakage_fault(1.0) | Leakage | Leakage 17/17 | 100% |
+| simplifiied-generator-fault | GeneratorFault | Generator 19/19 | 100% |
+| simplifiied-generator-fault(st-0.5) | GeneratorFault | Generator 39/39 | 100% |
+| simplified_generator_fault | GeneratorFault | Pump 24/24 | **0%** |
+
+**Nine of ten runs are diagnosed perfectly.** The entire residual error of the
+system is concentrated in a single run (`simplified_generator_fault`), which
+was exported at a different simulation operating point than the other two
+generator runs. The headline "89.1% accuracy" is therefore better read as:
+*perfect diagnosis on 9/10 independent runs, with one run affected by a known
+data-consistency defect* — a data-collection fix, not a modelling one.
 
 Final decision flow per 0.02 s window:
 
@@ -500,6 +577,13 @@ code + `artifacts/` folder — the raw training data is **not** required for use
 5. **Stationarity within a window:** features assume the 0.02 s window is
    locally stationary — reasonable at 10 kHz, but very fast transients inside a
    single window are averaged.
+6. **Probability calibration:** a reliability check of the out-of-run
+   probabilities shows the ensemble is *overconfident* in its top bin
+   (predicted ≈ 0.99 vs observed ≈ 0.85), and the overconfidence traces to the
+   same divergent generator run as limitation 4. Consequently the 0.90 gate is
+   treated as an empirically validated decision threshold (Table 10.1), not as
+   a literal probability statement — "confidence 0.95" on the dashboard should
+   be read as a ranking signal, not as "95% chance of being correct".
 
 ## 15. Conclusion and Future Work
 
@@ -521,6 +605,7 @@ dashboard with run-level trend tracking across repeated uploads.
 
 ---
 
-*Figures: `docs/report_figures/`. Reproducible pipeline:
-`notebooks/00 … 07`. Deployed model: `artifacts/two_stage_model.joblib`.
-Metrics: `artifacts/two_stage_metrics.json`.*
+*Figures: `docs/report_figures/`. Reproducible pipeline: `notebooks/00 … 07`,
+robustness validation: `notebooks/08_robustness_checks.ipynb`. Deployed model:
+`artifacts/two_stage_model.joblib`. Metrics: `artifacts/two_stage_metrics.json`
+and `artifacts/robustness_*` files.*
